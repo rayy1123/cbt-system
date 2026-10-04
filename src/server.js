@@ -1,6 +1,16 @@
 import http from 'node:http';
 import { login, logout, authenticate } from './auth.js';
 import { createQuestion, listQuestions, getQuestionForAuthor } from './questions.js';
+import {
+  createExam,
+  addQuestionsToExam,
+  assignParticipant,
+  listAssignedExams,
+  startAttempt,
+  getAttempt,
+  saveAnswer,
+  submitAttempt
+} from './exams.js';
 
 const PORT = process.env.PORT || 3000;
 
@@ -123,11 +133,6 @@ export function createServer() {
     // Questions API (Authoring: TEACHER or ADMIN)
     if (url.pathname === '/api/v1/questions') {
       const token = extractBearerToken(req);
-      if (!token) {
-        res.writeHead(401);
-        return res.end(JSON.stringify({ error: { code: 'UNAUTHORIZED', message: 'Missing token' } }));
-      }
-
       const user = authenticate(token);
       if (!user) {
         res.writeHead(401);
@@ -168,11 +173,6 @@ export function createServer() {
     // GET /api/v1/questions/:id
     if (url.pathname.startsWith('/api/v1/questions/') && method === 'GET') {
       const token = extractBearerToken(req);
-      if (!token) {
-        res.writeHead(401);
-        return res.end(JSON.stringify({ error: { code: 'UNAUTHORIZED', message: 'Missing token' } }));
-      }
-
       const user = authenticate(token);
       if (!user) {
         res.writeHead(401);
@@ -184,6 +184,173 @@ export function createServer() {
         const question = getQuestionForAuthor(questionId, user);
         res.writeHead(200);
         return res.end(JSON.stringify({ question }));
+      } catch (err) {
+        return handleServiceError(res, err);
+      }
+    }
+
+    // POST /api/v1/exams (Teacher / Admin creates exam)
+    if (url.pathname === '/api/v1/exams' && method === 'POST') {
+      const token = extractBearerToken(req);
+      const user = authenticate(token);
+      if (!user) {
+        res.writeHead(401);
+        return res.end(JSON.stringify({ error: { code: 'UNAUTHORIZED', message: 'Invalid session' } }));
+      }
+
+      try {
+        const body = await parseJsonBody(req);
+        const exam = createExam({
+          organizationId: user.organization_id,
+          title: body.title,
+          description: body.description,
+          durationSeconds: body.durationSeconds,
+          startsAt: body.startsAt,
+          endsAt: body.endsAt,
+          resultReleasePolicy: body.resultReleasePolicy
+        }, user);
+
+        res.writeHead(201);
+        return res.end(JSON.stringify({ exam }));
+      } catch (err) {
+        return handleServiceError(res, err);
+      }
+    }
+
+    // POST /api/v1/exams/:id/questions (Attach questions)
+    if (url.pathname.startsWith('/api/v1/exams/') && url.pathname.endsWith('/questions') && method === 'POST') {
+      const token = extractBearerToken(req);
+      const user = authenticate(token);
+      if (!user) {
+        res.writeHead(401);
+        return res.end(JSON.stringify({ error: { code: 'UNAUTHORIZED', message: 'Invalid session' } }));
+      }
+
+      const examId = url.pathname.split('/')[4];
+      try {
+        const body = await parseJsonBody(req);
+        const questions = addQuestionsToExam(examId, body.questions || [], user);
+        res.writeHead(200);
+        return res.end(JSON.stringify({ questions }));
+      } catch (err) {
+        return handleServiceError(res, err);
+      }
+    }
+
+    // POST /api/v1/exams/:id/assign (Assign participant)
+    if (url.pathname.startsWith('/api/v1/exams/') && url.pathname.endsWith('/assign') && method === 'POST') {
+      const token = extractBearerToken(req);
+      const user = authenticate(token);
+      if (!user) {
+        res.writeHead(401);
+        return res.end(JSON.stringify({ error: { code: 'UNAUTHORIZED', message: 'Invalid session' } }));
+      }
+
+      const examId = url.pathname.split('/')[4];
+      try {
+        const body = await parseJsonBody(req);
+        const assignment = assignParticipant(examId, body.participantId, user);
+        res.writeHead(200);
+        return res.end(JSON.stringify({ assignment }));
+      } catch (err) {
+        return handleServiceError(res, err);
+      }
+    }
+
+    // GET /api/v1/participant/exams (List assigned exams)
+    if (url.pathname === '/api/v1/participant/exams' && method === 'GET') {
+      const token = extractBearerToken(req);
+      const user = authenticate(token);
+      if (!user) {
+        res.writeHead(401);
+        return res.end(JSON.stringify({ error: { code: 'UNAUTHORIZED', message: 'Invalid session' } }));
+      }
+
+      try {
+        const exams = listAssignedExams(user);
+        res.writeHead(200);
+        return res.end(JSON.stringify({ exams }));
+      } catch (err) {
+        return handleServiceError(res, err);
+      }
+    }
+
+    // POST /api/v1/participant/exams/:examId/attempts (Start attempt)
+    if (url.pathname.startsWith('/api/v1/participant/exams/') && url.pathname.endsWith('/attempts') && method === 'POST') {
+      const token = extractBearerToken(req);
+      const user = authenticate(token);
+      if (!user) {
+        res.writeHead(401);
+        return res.end(JSON.stringify({ error: { code: 'UNAUTHORIZED', message: 'Invalid session' } }));
+      }
+
+      const examId = url.pathname.split('/')[5];
+      try {
+        const attempt = startAttempt(examId, user);
+        res.writeHead(201);
+        return res.end(JSON.stringify({ attempt }));
+      } catch (err) {
+        return handleServiceError(res, err);
+      }
+    }
+
+    // GET /api/v1/participant/attempts/:attemptId (Get attempt + sanitized questions)
+    const getAttemptMatch = url.pathname.match(/^\/api\/v1\/participant\/attempts\/([a-zA-Z0-9_-]+)$/);
+    if (getAttemptMatch && method === 'GET') {
+      const token = extractBearerToken(req);
+      const user = authenticate(token);
+      if (!user) {
+        res.writeHead(401);
+        return res.end(JSON.stringify({ error: { code: 'UNAUTHORIZED', message: 'Invalid session' } }));
+      }
+
+      const attemptId = getAttemptMatch[1];
+      try {
+        const data = getAttempt(attemptId, user);
+        res.writeHead(200);
+        return res.end(JSON.stringify(data));
+      } catch (err) {
+        return handleServiceError(res, err);
+      }
+    }
+
+    // PUT /api/v1/participant/attempts/:attemptId/answers/:questionVersionId (Save answer)
+    const saveAnswerMatch = url.pathname.match(/^\/api\/v1\/participant\/attempts\/([a-zA-Z0-9_-]+)\/answers\/([a-zA-Z0-9_-]+)$/);
+    if (saveAnswerMatch && method === 'PUT') {
+      const token = extractBearerToken(req);
+      const user = authenticate(token);
+      if (!user) {
+        res.writeHead(401);
+        return res.end(JSON.stringify({ error: { code: 'UNAUTHORIZED', message: 'Invalid session' } }));
+      }
+
+      const attemptId = saveAnswerMatch[1];
+      const questionVersionId = saveAnswerMatch[2];
+      try {
+        const body = await parseJsonBody(req);
+        const result = saveAnswer(attemptId, questionVersionId, body, user);
+        res.writeHead(200);
+        return res.end(JSON.stringify(result));
+      } catch (err) {
+        return handleServiceError(res, err);
+      }
+    }
+
+    // POST /api/v1/participant/attempts/:attemptId/submit (Submit attempt)
+    const submitMatch = url.pathname.match(/^\/api\/v1\/participant\/attempts\/([a-zA-Z0-9_-]+)\/submit$/);
+    if (submitMatch && method === 'POST') {
+      const token = extractBearerToken(req);
+      const user = authenticate(token);
+      if (!user) {
+        res.writeHead(401);
+        return res.end(JSON.stringify({ error: { code: 'UNAUTHORIZED', message: 'Invalid session' } }));
+      }
+
+      const attemptId = submitMatch[1];
+      try {
+        const result = submitAttempt(attemptId, user);
+        res.writeHead(200);
+        return res.end(JSON.stringify(result));
       } catch (err) {
         return handleServiceError(res, err);
       }
